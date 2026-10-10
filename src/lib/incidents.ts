@@ -1,5 +1,7 @@
 import { resolveStation } from '../data/stations'
-import type { CorridorId, MetroStation } from '../data/stations'
+import type { CorridorId } from '../data/stations'
+import { compareByRisk } from '../services/riskSummary'
+import type { RiskResult } from '../services/riskScoring'
 import type { Incident, IncidentStatus, Severity } from '../types'
 
 export interface IncidentFilters {
@@ -44,9 +46,15 @@ export function formatTimestamp(timestamp: string) {
   return new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp))
 }
 
-/** Unresolved first, then severity, then oldest first. */
-export function sortIncidents(incidents: Incident[]) {
+/**
+ * Active (unresolved) reports first. With risk scores: score descending, then severity, then oldest first.
+ * Without scores: status, severity, oldest first (the original ordering).
+ */
+export function sortIncidents(incidents: Incident[], risks?: ReadonlyMap<string, RiskResult>) {
   return [...incidents].sort((a, b) => {
+    const activeDelta = Number(a.status === 'RESOLVED') - Number(b.status === 'RESOLVED')
+    if (activeDelta) return activeDelta
+    if (risks) return compareByRisk(a, b, risks)
     const statusDelta = statusWeight[a.status] - statusWeight[b.status]
     if (statusDelta) return statusDelta
     const severityDelta = severityWeight[b.severity] - severityWeight[a.severity]
@@ -62,25 +70,4 @@ export function filterIncidents(incidents: Incident[], filters: IncidentFilters)
     if (filters.corridor !== 'ALL') return station?.connectedCorridors.includes(filters.corridor) ?? false
     return true
   })
-}
-
-export interface StationCount {
-  station: MetroStation
-  active: number
-  critical: number
-}
-
-/** Unresolved report counts keyed by station ID. */
-export function countByStation(incidents: Incident[]) {
-  const counts = new Map<string, StationCount>()
-  for (const incident of incidents) {
-    if (incident.status === 'RESOLVED') continue
-    const station = resolveStation(incident)
-    if (!station) continue
-    const entry = counts.get(station.id) ?? { station, active: 0, critical: 0 }
-    entry.active += 1
-    if (incident.severity === 'CRITICAL') entry.critical += 1
-    counts.set(station.id, entry)
-  }
-  return counts
 }

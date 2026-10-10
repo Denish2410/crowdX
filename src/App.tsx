@@ -3,8 +3,10 @@ import { AlertTriangle, ArrowRight, CheckCircle2, ListFilter, LoaderCircle, Send
 import type { ReactNode } from 'react'
 import { resolveStation } from './data/stations'
 import { createIncident, getIncidents, initialiseIncidents, updateIncident } from './lib/db'
-import { countByStation, filterIncidents, nextStatus, noFilters, sortIncidents } from './lib/incidents'
+import { filterIncidents, nextStatus, noFilters, sortIncidents } from './lib/incidents'
 import type { IncidentFilters } from './lib/incidents'
+import { scoreIncidents } from './services/riskScoring'
+import { summariseRisk, summariseStationRisk } from './services/riskSummary'
 import type { Incident } from './types'
 import { AppShell } from './components/AppShell'
 import type { View } from './components/AppShell'
@@ -13,6 +15,7 @@ import { IncidentDetails, IncidentList } from './components/IncidentQueue'
 import { PwaNotices } from './components/PwaStatus'
 import { initialDraft, ReportForm } from './components/ReportForm'
 import type { ReportDraft } from './components/ReportForm'
+import { RiskOverviewCard } from './components/RiskViews'
 import { ActiveByStation, StationsView } from './components/StationViews'
 
 const pageText: Record<View, { title: string; subtitle: (active: number, critical: number) => string }> = {
@@ -70,9 +73,26 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [success])
 
-  const filtered = useMemo(() => sortIncidents(filterIncidents(incidents, filters)), [incidents, filters])
+  // Reference time for age-based scores. The timer only changes state when the wall-clock minute changes, so
+  // scores refresh about once a minute; creating a report also refreshes it so the new report counts immediately.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return
+      const current = Date.now()
+      setNow((previous) => (Math.floor(current / 60000) !== Math.floor(previous / 60000) ? current : previous))
+    }
+    const timer = window.setInterval(tick, 15000)
+    document.addEventListener('visibilitychange', tick)
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', tick) }
+  }, [])
+
+  // Scores are always derived from the loaded reports and the reference time; nothing is stored.
+  const risks = useMemo(() => scoreIncidents(incidents, now), [incidents, now])
+  const riskOverview = useMemo(() => summariseRisk(incidents, risks), [incidents, risks])
+  const counts = useMemo(() => new Map(summariseStationRisk(incidents, risks).map((entry) => [entry.station.id, entry])), [incidents, risks])
+  const filtered = useMemo(() => sortIncidents(filterIncidents(incidents, filters), risks), [incidents, filters, risks])
   const selected = filtered.find((incident) => incident.id === selectedId) ?? filtered[0]
-  const counts = useMemo(() => countByStation(incidents), [incidents])
   const unresolved = incidents.filter((incident) => incident.status !== 'RESOLVED')
   const activeCount = unresolved.length
   const criticalCount = unresolved.filter((incident) => incident.severity === 'CRITICAL').length
@@ -102,6 +122,7 @@ function App() {
     try {
       const incident = await createIncident({ ...draft.report, notes: draft.report.notes.trim() })
       setIncidents((current) => [...current, incident])
+      setNow(Date.now())
       setSelectedId(incident.id)
       setDraft((current) => ({ ...current, report: { ...current.report, notes: '', severity: 'MEDIUM' } }))
       // Only reached once IndexedDB has confirmed the write.
@@ -154,16 +175,17 @@ function App() {
             <section className="card overflow-hidden" aria-label="Crowd incident queue">
               <div className="flex items-center justify-between gap-3 px-5 py-4 sm:px-6">
                 <div className="flex items-center gap-2"><ListFilter className="text-brand-600" size={19} /><h2 className="font-semibold text-ink">Crowd incident queue</h2></div>
-                <span className="hidden text-xs text-muted sm:block">Unresolved first · severity · oldest first</span>
+                <span className="hidden text-xs text-muted sm:block">Active first · risk score · severity · oldest</span>
               </div>
               {queueFilters}
-              {loading ? loadingBlock : <IncidentList incidents={filtered.slice(0, QUEUE_PREVIEW)} selectedId={undefined} onSelect={openIncident} onAdvance={(i) => void advanceStatus(i)} {...emptyProps} />}
+              {loading ? loadingBlock : <IncidentList risks={risks} incidents={filtered.slice(0, QUEUE_PREVIEW)} selectedId={undefined} onSelect={openIncident} onAdvance={(i) => void advanceStatus(i)} {...emptyProps} />}
               {!loading && filtered.length > QUEUE_PREVIEW && (
                 <button type="button" onClick={() => navigate('reports')} className="flex w-full items-center justify-center gap-1.5 border-t border-line px-4 py-3 text-sm font-semibold text-brand-700 transition hover:bg-tint">View all {filtered.length} reports<ArrowRight size={15} /></button>
               )}
             </section>
 
             <div className="space-y-6">
+              <RiskOverviewCard overview={riskOverview} onOpen={openIncident} />
               <ActiveByStation counts={counts} selectedStationId={filters.stationId} onSelect={selectStation} />
               <aside className="rounded-2xl border border-blue-200 bg-gradient-to-br from-tint to-white p-5">
                 <div className="flex items-center gap-2 font-semibold text-brand-700"><WifiOff size={17} />Built for tunnels and weak signal</div>
@@ -181,12 +203,12 @@ function App() {
             <section className="card overflow-hidden" aria-label="Incident queue">
               <div className="flex items-center justify-between gap-3 px-5 py-4 sm:px-6">
                 <div className="flex items-center gap-2"><ListFilter className="text-brand-600" size={19} /><h2 className="font-semibold text-ink">Incident queue</h2></div>
-                <span className="hidden text-xs text-muted sm:block">Unresolved first · severity · oldest first</span>
+                <span className="hidden text-xs text-muted sm:block">Active first · risk score · severity · oldest</span>
               </div>
               {queueFilters}
-              {loading ? loadingBlock : <IncidentList incidents={filtered} selectedId={selected?.id} onSelect={setSelectedId} onAdvance={(i) => void advanceStatus(i)} {...emptyProps} />}
+              {loading ? loadingBlock : <IncidentList risks={risks} incidents={filtered} selectedId={selected?.id} onSelect={setSelectedId} onAdvance={(i) => void advanceStatus(i)} {...emptyProps} />}
             </section>
-            {selected && <IncidentDetails incident={selected} onAdvance={() => void advanceStatus(selected)} />}
+            {selected && <IncidentDetails incident={selected} risk={risks.get(selected.id)} onAdvance={() => void advanceStatus(selected)} />}
           </div>
           <aside className="card h-fit p-5 sm:p-6 xl:order-2 xl:sticky xl:top-24">
             <div className="mb-5"><h2 className="font-semibold text-ink">New crowd report</h2><p className="mt-0.5 text-xs text-muted">Saved on this device, even when offline.</p></div>

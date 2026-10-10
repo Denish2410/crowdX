@@ -2,30 +2,30 @@ import { useMemo, useState } from 'react'
 import { ArrowLeftRight, Search, TramFront } from 'lucide-react'
 import { corridors, metroStations, stationsOnCorridor } from '../data/stations'
 import type { CorridorId, MetroStation } from '../data/stations'
-import type { StationCount } from '../lib/incidents'
-import { CorridorBadges, EmptyState } from './ui'
+import type { StationRisk } from '../services/riskSummary'
+import { CorridorBadges, EmptyState, RiskBadge } from './ui'
 
-type Counts = Map<string, StationCount>
+type Counts = Map<string, StationRisk>
 
 /** Overview panel: stations with unresolved reports, busiest first. */
 export function ActiveByStation({ counts, selectedStationId, onSelect }: { counts: Counts; selectedStationId: string; onSelect: (id: string) => void }) {
-  const rows = [...counts.values()].sort((a, b) => b.critical - a.critical || b.active - a.active || a.station.name.localeCompare(b.station.name))
+  const rows = [...counts.values()].sort((a, b) => b.maxScore - a.maxScore || b.active - a.active || a.station.name.localeCompare(b.station.name))
   const max = Math.max(1, ...rows.map((row) => row.active))
   return (
     <section className="card" aria-label="Active reports by station">
-      <div className="border-b border-line px-5 py-4"><h2 className="font-semibold text-ink">Active reports by station</h2><p className="mt-0.5 text-xs text-muted">Select a station to filter the queue.</p></div>
+      <div className="border-b border-line px-5 py-4"><h2 className="font-semibold text-ink">Active reports by station</h2><p className="mt-0.5 text-xs text-muted">Highest calculated risk first. Counts are reports, not passengers. Select a station to filter the queue.</p></div>
       {rows.length === 0 ? (
         <EmptyState icon={<TramFront size={20} />} title="No unresolved reports">Every station is clear.</EmptyState>
       ) : (
         <ul className="max-h-96 divide-y divide-line overflow-y-auto">
-          {rows.map(({ station, active, critical }) => (
+          {rows.map(({ station, active, critical, maxBand, maxScore }) => (
             <li key={station.id}>
               <button type="button" onClick={() => onSelect(station.id)} aria-pressed={selectedStationId === station.id} className={`w-full px-5 py-3 text-left transition-colors hover:bg-slate-50 ${selectedStationId === station.id ? 'bg-tint' : ''}`}>
                 <div className="flex items-center justify-between gap-3">
                   <span className="truncate text-sm font-medium text-ink">{station.name}</span>
-                  <span className="shrink-0 text-xs text-muted">{active} active{critical > 0 && <span className="ml-1.5 rounded-full bg-red-50 px-1.5 py-0.5 font-semibold text-red-700">{critical} critical</span>}</span>
+                  <span className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 text-xs text-muted">{active} active{critical > 0 && <span className="rounded-full bg-red-50 px-1.5 py-0.5 font-semibold text-red-700">{critical} critical</span>}<RiskBadge band={maxBand} score={maxScore} /></span>
                 </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full ${critical > 0 ? 'bg-red-500' : 'bg-brand-600'}`} style={{ width: `${(active / max) * 100}%` }} /></div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-brand-600" style={{ width: `${(active / max) * 100}%` }} /></div>
               </button>
             </li>
           ))}
@@ -35,7 +35,7 @@ export function ActiveByStation({ counts, selectedStationId, onSelect }: { count
   )
 }
 
-function StationCard({ station, corridor, count, onSelect }: { station: MetroStation; corridor: CorridorId; count?: StationCount; onSelect: (id: string) => void }) {
+function StationCard({ station, corridor, count, onSelect }: { station: MetroStation; corridor: CorridorId; count?: StationRisk; onSelect: (id: string) => void }) {
   return (
     <li>
       <button type="button" onClick={() => onSelect(station.id)} className="card flex w-full items-center gap-3 p-3.5 text-left transition hover:-translate-y-px hover:border-brand-600/40 hover:shadow-lift">
@@ -47,7 +47,8 @@ function StationCard({ station, corridor, count, onSelect }: { station: MetroSta
             {station.isInterchange && <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800"><ArrowLeftRight size={11} />Interchange</span>}
           </span>
         </span>
-        <span className="shrink-0 text-right text-xs">
+        <span className="shrink-0 space-y-1 text-right text-xs">
+          {count && <span className="block"><RiskBadge band={count.maxBand} score={count.maxScore} /></span>}
           <span className={`block font-semibold ${count ? 'text-ink' : 'text-slate-400'}`}>{count?.active ?? 0} active</span>
           <span className={`block ${count?.critical ? 'font-semibold text-red-700' : 'text-slate-400'}`}>{count?.critical ?? 0} critical</span>
         </span>
@@ -60,6 +61,7 @@ export function StationsView({ counts, onSelectStation }: { counts: Counts; onSe
   const [query, setQuery] = useState('')
   const [corridorTab, setCorridorTab] = useState<CorridorId | 'ALL'>('ALL')
   const q = query.trim().toLowerCase()
+  const topStations = useMemo(() => [...counts.values()].sort((a, b) => b.maxScore - a.maxScore || b.active - a.active).slice(0, 3), [counts])
 
   const sections = useMemo(() => {
     const matches = (s: MetroStation) => !q || [s.name, ...s.aliases].some((label) => label.toLowerCase().includes(q))
@@ -82,6 +84,22 @@ export function StationsView({ counts, onSelectStation }: { counts: Counts; onSe
           ))}
         </div>
       </div>
+
+      {topStations.length > 0 && (
+        <section aria-label="Highest-risk stations" className="card p-4 sm:p-5">
+          <h2 className="font-semibold text-ink">Highest calculated risk</h2>
+          <p className="mt-0.5 text-xs text-muted">Based on unresolved reports only. Scores are heuristics, not measured crowd levels.</p>
+          <ol className="mt-3 grid gap-2 sm:grid-cols-3">
+            {topStations.map(({ station, maxBand, maxScore, active }, index) => (
+              <li key={station.id}><button type="button" onClick={() => onSelectStation(station.id)} className="flex w-full items-center gap-3 rounded-xl border border-line px-3 py-2.5 text-left transition hover:border-brand-600/40 hover:bg-tint">
+                <span className="text-sm font-bold text-muted">{index + 1}</span>
+                <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-ink">{station.name}</span><span className="text-xs text-muted">{active} active</span></span>
+                <RiskBadge band={maxBand} score={maxScore} />
+              </button></li>
+            ))}
+          </ol>
+        </section>
+      )}
 
       {sections.length === 0 && <div className="card"><EmptyState icon={<Search size={20} />} title="No stations match">Try a different name.</EmptyState></div>}
 
