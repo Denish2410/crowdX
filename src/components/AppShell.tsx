@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ClipboardList, LayoutDashboard, Menu, TramFront, UserRound, X } from 'lucide-react'
+import { ClipboardList, DatabaseBackup, LayoutDashboard, Menu, TramFront, UserRound, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { ConnectionBadge } from './PwaStatus'
 
-export type View = 'overview' | 'reports' | 'stations'
+export type View = 'overview' | 'reports' | 'stations' | 'data'
 
 const navItems: { id: View; label: string; icon: LucideIcon }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'reports', label: 'Crowd Reports', icon: ClipboardList },
   { id: 'stations', label: 'Stations', icon: TramFront },
+  { id: 'data', label: 'Data Management', icon: DatabaseBackup },
 ]
 
 function Brand() {

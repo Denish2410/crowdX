@@ -15,6 +15,7 @@ import { IncidentDetails, IncidentList } from './components/IncidentQueue'
 import { PwaNotices } from './components/PwaStatus'
 import { initialDraft, ReportForm } from './components/ReportForm'
 import type { ReportDraft } from './components/ReportForm'
+import { DataManagement } from './components/DataManagement'
 import { RiskOverviewCard } from './components/RiskViews'
 import { ActiveByStation, StationsView } from './components/StationViews'
 
@@ -25,6 +26,7 @@ const pageText: Record<View, { title: string; subtitle: (active: number, critica
       active === 0 ? 'All clear: there are no unresolved crowd reports.' : `${active} unresolved crowd ${active === 1 ? 'report' : 'reports'}${critical ? `, ${critical} critical` : ''}. Reports are saved on this device.`,
   },
   reports: { title: 'Crowd Reports', subtitle: () => 'File a new crowd report and work through the priority queue.' },
+  data: { title: 'Data Management', subtitle: () => 'Back up, export and restore reports stored on this device. Everything runs offline.' },
   stations: { title: 'Stations', subtitle: () => 'Ahmedabad Metro Phase II stations by corridor, with unresolved report counts.' },
 }
 
@@ -98,6 +100,11 @@ function App() {
   const criticalCount = unresolved.filter((incident) => incident.severity === 'CRITICAL').length
   const highCount = unresolved.filter((incident) => incident.severity === 'HIGH').length
   const resolvedCount = incidents.length - activeCount
+
+  const reloadIncidents = useCallback(async () => {
+    setIncidents(await getIncidents())
+    setNow(Date.now())
+  }, [])
 
   const navigate = useCallback((next: View) => { setView(next); window.scrollTo({ top: 0 }) }, [])
 
@@ -216,6 +223,8 @@ function App() {
           </aside>
         </div>
       )}
+
+      {view === 'data' && <DataManagement onRestored={reloadIncidents} />}
 
       {view === 'stations' && (
         <StationsView counts={counts} onSelectStation={(id) => { selectStation(id); navigate('reports') }} />

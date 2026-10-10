@@ -1,19 +1,10 @@
-import { openDB } from 'idb'
-import type { DBSchema } from 'idb'
+import { openCrowdXDb } from './crowdxDb'
 import type { Incident, NewIncident } from '../types'
 
-interface CrowdXDatabase extends DBSchema {
-  incidents: {
-    key: string
-    value: Incident
-  }
-}
+const dbPromise = openCrowdXDb()
 
-const dbPromise = openDB<CrowdXDatabase>('crowdx-operations', 1, {
-  upgrade(database) {
-    database.createObjectStore('incidents', { keyPath: 'id' })
-  },
-})
+/** The shared database handle, for services that need their own transactions (backup restore). */
+export const getDb = () => dbPromise
 
 const hoursAgo = (hours: number) => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString()
 

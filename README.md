@@ -98,3 +98,73 @@ npm run preview   # serve the production build (the service worker only runs her
 - The weights, 60-minute window and band thresholds are demo defaults, not calibrated against real incidents.
 - The score only reflects staff reports. It has no passenger counts, sensors, train schedules or station capacity.
 - Reports are stored per browser; there is no sync, so each device scores only its own reports.
+
+## Data Management (backup, restore and export)
+
+Open **Data Management** in the sidebar. Everything runs in the browser against IndexedDB; there is no server, upload or network request, so it works offline.
+
+### Export
+
+- **Export JSON backup** downloads `crowdx-backup-YYYY-MM-DD.json` containing every report with its full status history. Use this file to restore.
+- **Export CSV** downloads `crowdx-reports-YYYY-MM-DD.csv`, one row per report, for analysis in a spreadsheet. A CSV is **not** a backup and cannot be restored.
+- After each export the page shows how many reports were written and the time of the last export in this session (the last-export time is kept in memory only).
+
+### JSON backup format (schema version 1)
+
+```json
+{
+  "app": "CrowdX",
+  "schemaVersion": 1,
+  "exportedAt": "2026-10-10T12:00:00.000Z",
+  "stationDataset": { "stationCount": 23, "stationIds": ["ST_MOTERA_STADIUM", "..."] },
+  "incidents": [
+    { "id": "…", "station": "GNLU", "stationId": "ST_GNLU", "zone": "Interchange", "severity": "HIGH",
+      "notes": "…", "status": "OPEN", "createdAt": "…", "updatedAt": "…",
+      "history": [{ "status": "OPEN", "at": "…" }] }
+  ]
+}
+```
+
+- `incidents` are the app's own report objects, unchanged. The `incidents` store is the only persisted application data, so nothing else is exported.
+- `stationDataset` is informational metadata. Stations are not restored from a backup; the app's built-in 23-station dataset is always used.
+- **Calculated risk scores are not stored** in the backup. They are derived values and are recomputed from the restored reports.
+- Files with a `schemaVersion` newer than the app supports are rejected with a message rather than guessed at.
+
+### CSV columns
+
+`report_id, station_name, station_id, corridor, zone, reported_severity, status, calculated_risk_score, calculated_risk_band, risk_counts_as_active, risk_reference_time, notes, created_at, updated_at, resolved_at, status_history`
+
+- Timestamps are ISO 8601. Risk is calculated by the existing scoring service at the export time, which is written to `risk_reference_time` on every row. `station_id` and `resolved_at` are left blank when the report has none.
+- The file is UTF-8 with a byte-order mark so Excel reads Gujarati and other non-ASCII text correctly. Rows use CRLF line endings and cells containing commas, quotes or line breaks are quoted (RFC 4180).
+- **Formula-injection protection:** text cells beginning with `=`, `+`, `-`, `@`, a tab or a carriage return are prefixed with an apostrophe (`'`), so a note like `=HYPERLINK(...)` is shown as text. The apostrophe is visible in the data.
+
+### Restoring a backup safely
+
+1. Choose a `.json` backup. The file is read locally and **nothing is written yet**.
+2. The preview shows counts of records to add, already-existing, conflicting and invalid, with the reason for each record. New records are pre-selected; untick any you do not want.
+3. Click **Restore selected records**. All selected records are written in one IndexedDB transaction. If anything fails, none are added and an error is shown; success is shown only after the transaction completes.
+
+Validation is strict and nothing is silently repaired: each record needs a non-empty `id`, `station`, `zone` and string `notes`; a valid `severity` and `status`; ISO 8601 `createdAt`/`updatedAt`; and a non-empty, chronological `history` ending at the current status. The station must be a known `stationId`, or, for older records without one, a known station name or alias (for example "Gandhinagar Sector 1"), which is resolved to its station ID and noted in the preview. Unknown fields are ignored and noted.
+
+**Duplicates and conflicts (additive restore only)**
+
+- A record identical to a stored one is skipped ("already exists").
+- A record with the same ID as a stored report but different content is a **conflict**: it is skipped, the differing fields are listed and the stored report is kept. Restore never overwrites, merges or deletes existing reports. There is no replace mode in this version.
+- The same ID twice in the file: identical repeats are skipped; if the copies differ, all copies are held back as a file conflict.
+- Restore uses `add`, so even if a report appears in IndexedDB between preview and restore, the colliding batch is rolled back instead of overwriting it.
+
+### Tests and build
+
+```bash
+npm test          # Vitest, including backup/restore tests against an in-memory IndexedDB (fake-indexeddb)
+npm run build     # type-check, production bundle and service worker
+npm run preview   # serve the build; the service worker only runs here, not under `npm run dev`
+```
+
+### Offline behaviour and limitations
+
+- Export, validation, preview and restore use only browser APIs and IndexedDB, so they work in Airplane Mode. The service worker, update prompt and online/offline badge are unchanged.
+- **Privacy:** backups and CSV files contain incident data (stations, notes, timestamps). Store them securely and share them only with authorised staff. Files are not encrypted.
+- **Data loss:** reports live only in this browser. Clearing site data, using a private window, uninstalling the app or losing the device erases them. Export a backup regularly and keep it somewhere safe.
+- Restore is additive only (no replace or merge), is limited to 25 MB per file, and the "last exported" time resets when the page is reloaded.
+- Backups restore into the current database schema (version 1); there is no migration of older or newer database versions.
