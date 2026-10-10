@@ -13,7 +13,8 @@ import {
   ShieldAlert,
   TramFront,
 } from 'lucide-react'
-import { metroStations } from './data/stations'
+import { corridorById, corridors, metroStations, resolveStation, stationsOnCorridor } from './data/stations'
+import type { CorridorId, MetroStation } from './data/stations'
 import { createIncident, getIncidents, initialiseIncidents, updateIncident } from './lib/db'
 import { ConnectionBadge, PwaNotices } from './components/PwaStatus'
 import type { Incident, IncidentStatus, NewIncident, Severity } from './types'
@@ -35,6 +36,7 @@ const severityStyle: Record<Severity, string> = {
 const initialStation = metroStations[0]
 const initialForm: NewIncident = {
   station: initialStation.name,
+  stationId: initialStation.id,
   zone: initialStation.zones[0],
   severity: 'MEDIUM',
   notes: '',
@@ -70,8 +72,29 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [corridorFilter, setCorridorFilter] = useState<CorridorId | 'ALL'>('ALL')
+  const [stationFilter, setStationFilter] = useState('ALL')
 
-  const sortedIncidents = useMemo(() => sortIncidents(incidents), [incidents])
+  const filteredIncidents = useMemo(() => incidents.filter((incident) => {
+    const station = resolveStation(incident)
+    if (stationFilter !== 'ALL') return station?.id === stationFilter
+    if (corridorFilter !== 'ALL') return station?.connectedCorridors.includes(corridorFilter) ?? false
+    return true
+  }), [incidents, corridorFilter, stationFilter])
+  const sortedIncidents = useMemo(() => sortIncidents(filteredIncidents), [filteredIncidents])
+  const stationSummary = useMemo(() => {
+    const counts = new Map<string, { station: MetroStation; active: number; critical: number }>()
+    for (const incident of incidents) {
+      if (incident.status === 'RESOLVED') continue
+      const station = resolveStation(incident)
+      if (!station) continue
+      const entry = counts.get(station.id) ?? { station, active: 0, critical: 0 }
+      entry.active += 1
+      if (incident.severity === 'CRITICAL') entry.critical += 1
+      counts.set(station.id, entry)
+    }
+    return [...counts.values()].sort((a, b) => b.critical - a.critical || b.active - a.active || a.station.name.localeCompare(b.station.name))
+  }, [incidents])
   const selected = sortedIncidents.find((incident) => incident.id === selectedId) ?? sortedIncidents[0]
   const activeCount = incidents.filter((incident) => incident.status !== 'RESOLVED').length
   const criticalCount = incidents.filter((incident) => incident.status !== 'RESOLVED' && incident.severity === 'CRITICAL').length
@@ -96,9 +119,9 @@ function App() {
     setForm((current) => ({ ...current, [key]: value }))
   }
 
-  function changeStation(stationName: string) {
-    const station = metroStations.find((item) => item.name === stationName) ?? initialStation
-    setForm((current) => ({ ...current, station: station.name, zone: station.zones[0] }))
+  function changeStation(stationId: string) {
+    const station = metroStations.find((item) => item.id === stationId) ?? initialStation
+    setForm((current) => ({ ...current, station: station.name, stationId: station.id, zone: station.zones[0] }))
   }
 
   async function submitReport(event: React.FormEvent<HTMLFormElement>) {
@@ -189,12 +212,44 @@ function App() {
                 <div className="flex items-center gap-2"><ListFilter className="text-electric-400" size={19} /><h2 className="font-semibold text-white">Incident queue</h2></div>
                 <span className="text-xs text-slate-400">Unresolved · severity · oldest first</span>
               </div>
+              <div className="flex flex-wrap gap-3 border-b border-white/10 px-5 py-3 sm:px-6">
+                <label className="text-xs font-medium text-slate-400">Corridor
+                  <select value={corridorFilter} onChange={(event) => { setCorridorFilter(event.target.value as CorridorId | 'ALL'); setStationFilter('ALL') }} className="field mt-1 !py-1.5 text-xs">
+                    <option value="ALL">All corridors</option>
+                    {corridors.map((corridor) => <option key={corridor.id} value={corridor.id}>{corridor.shortName}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs font-medium text-slate-400">Station
+                  <select value={stationFilter} onChange={(event) => setStationFilter(event.target.value)} className="field mt-1 !py-1.5 text-xs">
+                    <option value="ALL">All stations</option>
+                    {(corridorFilter === 'ALL' ? corridors.flatMap((corridor) => stationsOnCorridor(corridor.id)).filter((station, index, all) => all.indexOf(station) === index) : stationsOnCorridor(corridorFilter)).map((station) => <option key={station.id} value={station.id}>{station.name}</option>)}
+                  </select>
+                </label>
+                <p className="self-end text-xs text-slate-500">{sortedIncidents.length} of {incidents.length} reports</p>
+              </div>
               {loading ? (
                 <div className="flex items-center justify-center gap-2 px-6 py-16 text-sm text-slate-400"><LoaderCircle className="animate-spin" size={18} />Opening local incident store…</div>
               ) : (
                 <div className="divide-y divide-white/8">
+                  {sortedIncidents.length === 0 && <p className="px-6 py-10 text-center text-sm text-slate-500">No reports match this filter.</p>}
                   {sortedIncidents.map((incident) => <IncidentRow key={incident.id} incident={incident} selected={selected?.id === incident.id} onClick={() => setSelectedId(incident.id)} />)}
                 </div>
+              )}
+            </div>
+
+            <div className="panel p-5 sm:p-6">
+              <h2 className="font-semibold text-white">Active reports by station</h2>
+              {stationSummary.length === 0 ? <p className="mt-3 text-sm text-slate-500">No unresolved reports.</p> : (
+                <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {stationSummary.map(({ station, active, critical }) => (
+                    <li key={station.id}>
+                      <button onClick={() => { setCorridorFilter('ALL'); setStationFilter(station.id) }} className="flex w-full items-center justify-between gap-2 rounded-lg border border-white/10 px-3 py-2 text-left text-sm hover:bg-white/[0.03]">
+                        <span className="min-w-0 truncate text-slate-200">{station.name}</span>
+                        <span className="shrink-0 text-xs text-slate-400">{active} active{critical > 0 && <span className="ml-1 font-bold text-red-300">· {critical} critical</span>}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
 
@@ -205,14 +260,18 @@ function App() {
             <div className="mb-5 flex items-center gap-2"><Send className="text-electric-400" size={19} /><div><h2 className="font-semibold text-white">New crowd report</h2><p className="mt-0.5 text-xs text-slate-400">Create an operational incident.</p></div></div>
             <form onSubmit={submitReport} className="space-y-4">
               <label className="block text-sm font-medium text-slate-300">Station
-                <select value={form.station} onChange={(event) => changeStation(event.target.value)} className="field mt-1.5">
-                  {metroStations.map((station) => <option key={station.name} value={station.name}>{station.name} · {station.corridor}</option>)}
+                <select value={form.stationId} onChange={(event) => changeStation(event.target.value)} className="field mt-1.5">
+                  {corridors.map((corridor) => (
+                    <optgroup key={corridor.id} label={corridor.name}>
+                      {metroStations.filter((station) => station.corridorId === corridor.id).sort((a, b) => a.sequence - b.sequence).map((station) => <option key={station.id} value={station.id}>{station.sequence}. {station.name}{station.isInterchange ? ' (interchange → GIFT City branch)' : ''}</option>)}
+                    </optgroup>
+                  ))}
                 </select>
               </label>
               <div className="grid grid-cols-2 gap-3">
                 <label className="block text-sm font-medium text-slate-300">Zone
                   <select value={form.zone} onChange={(event) => updateForm('zone', event.target.value)} className="field mt-1.5">
-                    {(metroStations.find((station) => station.name === form.station)?.zones ?? []).map((zone) => <option key={zone}>{zone}</option>)}
+                    {(metroStations.find((station) => station.id === form.stationId)?.zones ?? []).map((zone) => <option key={zone}>{zone}</option>)}
                   </select>
                 </label>
                 <label className="block text-sm font-medium text-slate-300">Severity
@@ -244,7 +303,7 @@ function StatCard({ label, value, helper, icon, tone }: { label: string; value: 
 function IncidentRow({ incident, selected, onClick }: { incident: Incident; selected: boolean; onClick: () => void }) {
   return <button onClick={onClick} className={`flex w-full items-center gap-3 px-5 py-4 text-left transition sm:px-6 ${selected ? 'bg-electric-500/10' : 'hover:bg-white/[0.03]'}`}>
     <div className={`h-2.5 w-2.5 shrink-0 rounded-full ${incident.severity === 'CRITICAL' ? 'bg-red-400' : incident.severity === 'HIGH' ? 'bg-orange-400' : incident.severity === 'MEDIUM' ? 'bg-amber-300' : 'bg-electric-400'}`} />
-    <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-semibold text-white">{incident.station}</span><span className="text-sm text-slate-400">· {incident.zone}</span></div><p className="mt-1 truncate text-sm text-slate-400">{incident.notes}</p></div>
+    <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-semibold text-white">{resolveStation(incident)?.name ?? incident.station}</span><span className="text-sm text-slate-400">· {incident.zone}</span><CorridorBadges incident={incident} /></div><p className="mt-1 truncate text-sm text-slate-400">{incident.notes}</p></div>
     <div className="hidden text-right sm:block"><p className={`text-xs font-bold ${severityStyle[incident.severity]}`}>{incident.severity}</p><p className="mt-1 text-xs text-slate-500">{relativeTime(incident.createdAt)}</p></div>
     <span className={`hidden rounded-full border px-2 py-1 text-[10px] font-bold tracking-wide md:inline-block ${statusStyle[incident.status]}`}>{incident.status}</span><ChevronRight className="shrink-0 text-slate-500" size={18} />
   </button>
@@ -252,10 +311,16 @@ function IncidentRow({ incident, selected, onClick }: { incident: Incident; sele
 
 function IncidentDetails({ incident, onAdvance }: { incident: Incident; onAdvance: () => void }) {
   const action = incident.status === 'OPEN' ? 'Acknowledge incident' : incident.status === 'ACKNOWLEDGED' ? 'Resolve incident' : null
-  return <article className="panel p-5 sm:p-6"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-electric-400">Selected report</p><h2 className="mt-1 text-xl font-bold text-white">{incident.station} <span className="font-normal text-slate-400">· {incident.zone}</span></h2></div><span className={`w-fit rounded-full border px-3 py-1 text-xs font-bold ${statusStyle[incident.status]}`}>{incident.status}</span></div>
+  return <article className="panel p-5 sm:p-6"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-electric-400">Selected report</p><h2 className="mt-1 text-xl font-bold text-white">{resolveStation(incident)?.name ?? incident.station} <span className="font-normal text-slate-400">· {incident.zone}</span></h2><div className="mt-2"><CorridorBadges incident={incident} /></div></div><span className={`w-fit rounded-full border px-3 py-1 text-xs font-bold ${statusStyle[incident.status]}`}>{incident.status}</span></div>
     <div className="mt-5 grid gap-5 md:grid-cols-[minmax(0,1fr)_12rem]"><div><p className="text-sm leading-6 text-slate-300">{incident.notes}</p><div className="mt-4 flex items-center gap-2 text-xs text-slate-500"><MapPin size={14} /> Ahmedabad Metro Phase II <span className="text-slate-700">|</span><Clock3 size={14} /> Reported {formatTimestamp(incident.createdAt)}</div>{action && <button onClick={onAdvance} className="mt-5 inline-flex items-center gap-2 rounded-xl border border-electric-400/40 bg-electric-500/10 px-4 py-2.5 text-sm font-semibold text-electric-400 transition hover:bg-electric-500/20">{action}<ArrowRight size={16} /></button>}</div>
       <div className="border-l border-white/10 pl-5"><p className="mb-3 text-xs font-bold uppercase tracking-[0.15em] text-slate-500">Status history</p><ol className="space-y-3">{incident.history.map((event, index) => <li key={`${event.status}-${event.at}`} className="relative flex gap-2 text-xs text-slate-400"><span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${index === incident.history.length - 1 ? 'bg-electric-400' : 'bg-slate-600'}`} /><span><strong className="block text-slate-300">{event.status}</strong>{formatTimestamp(event.at)}</span></li>)}</ol></div>
     </div></article>
 }
 
 export default App
+
+function CorridorBadges({ incident }: { incident: Incident }) {
+  const station = resolveStation(incident)
+  if (!station) return null
+  return <>{station.connectedCorridors.map((id) => <span key={id} className="rounded-full border border-electric-400/20 bg-electric-500/10 px-2 py-0.5 text-[10px] font-medium text-electric-400">{corridorById(id).shortName}</span>)}</>
+}

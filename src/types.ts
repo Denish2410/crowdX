@@ -11,7 +11,10 @@ export interface StatusEvent {
 
 export interface Incident {
   id: string
+  /** Display name at the time of the report. */
   station: string
+  /** Stable station ID; absent on reports saved before station IDs existed. */
+  stationId?: string
   zone: string
   severity: Severity
   notes: string
@@ -21,4 +24,4 @@ export interface Incident {
   history: StatusEvent[]
 }
 
-export type NewIncident = Pick<Incident, 'station' | 'zone' | 'severity' | 'notes'>
+export type NewIncident = Pick<Incident, 'station' | 'stationId' | 'zone' | 'severity' | 'notes'>

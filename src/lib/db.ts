@@ -21,6 +21,7 @@ const demoIncidents: Incident[] = [
   {
     id: 'demo-motera-critical',
     station: 'Motera Stadium',
+    stationId: 'ST_MOTERA_STADIUM',
     zone: 'Platform 1',
     severity: 'CRITICAL',
     notes: 'Heavy post-event crowding. Hold incoming passengers at the concourse until platform clears.',
@@ -32,6 +33,7 @@ const demoIncidents: Incident[] = [
   {
     id: 'demo-gnlu-high',
     station: 'GNLU',
+    stationId: 'ST_GNLU',
     zone: 'Interchange',
     severity: 'HIGH',
     notes: 'Interchange footfall above normal levels; deploy station volunteers for wayfinding.',
@@ -46,6 +48,7 @@ const demoIncidents: Incident[] = [
   {
     id: 'demo-gift-city-resolved',
     station: 'GIFT City',
+    stationId: 'ST_GIFT_CITY',
     zone: 'Entry Gate',
     severity: 'MEDIUM',
     notes: 'Ticket queue extended to the entry approach during peak hour.',
