@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowRight, CheckCircle2, ListFilter, LoaderCircle, Send, ShieldAlert, Siren, WifiOff } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { resolveStation } from './data/stations'
-import { createIncident, getIncidents, initialiseIncidents, updateIncident } from './lib/db'
+import { createIncident, getDb, getIncidents, initialiseIncidents, updateIncident } from './lib/db'
 import { filterIncidents, nextStatus, noFilters, sortIncidents } from './lib/incidents'
 import type { IncidentFilters } from './lib/incidents'
 import { scoreIncidents } from './services/riskScoring'
 import { summariseRisk, summariseStationRisk } from './services/riskSummary'
-import type { Incident } from './types'
+import { DEMO_ACTOR, readAllActionEvents, recordActionEvent } from './services/actionTracking'
+import { deriveChecklist } from './services/escalation'
+import type { ActionEvent, Incident } from './types'
 import { AppShell } from './components/AppShell'
 import type { View } from './components/AppShell'
 import { FilterBar } from './components/FilterBar'
@@ -15,6 +17,7 @@ import { IncidentDetails, IncidentList } from './components/IncidentQueue'
 import { PwaNotices } from './components/PwaStatus'
 import { initialDraft, ReportForm } from './components/ReportForm'
 import type { ReportDraft } from './components/ReportForm'
+import { ResponseChecklist } from './components/ResponseChecklist'
 import { DataManagement } from './components/DataManagement'
 import { RiskOverviewCard } from './components/RiskViews'
 import { ActiveByStation, StationsView } from './components/StationViews'
@@ -52,6 +55,11 @@ function App() {
   const [loadError, setLoadError] = useState('')
   const [actionError, setActionError] = useState('')
   const [validation, setValidation] = useState('')
+  const [actionEvents, setActionEvents] = useState<ActionEvent[]>([])
+  const [eventsLoading, setEventsLoading] = useState(true)
+  const [eventsError, setEventsError] = useState('')
+  const [checklistError, setChecklistError] = useState('')
+  const [pendingActions, setPendingActions] = useState<ReadonlySet<string>>(new Set())
   const [saveError, setSaveError] = useState('')
   const [success, setSuccess] = useState('')
 
@@ -66,7 +74,17 @@ function App() {
         setLoading(false)
       }
     }
+    async function loadEvents() {
+      try {
+        setActionEvents(await readAllActionEvents(await getDb()))
+      } catch {
+        setEventsError('Response checklist progress could not be loaded from this device.')
+      } finally {
+        setEventsLoading(false)
+      }
+    }
     void load()
+    void loadEvents()
   }, [])
 
   useEffect(() => {
@@ -94,6 +112,14 @@ function App() {
   const riskOverview = useMemo(() => summariseRisk(incidents, risks), [incidents, risks])
   const counts = useMemo(() => new Map(summariseStationRisk(incidents, risks).map((entry) => [entry.station.id, entry])), [incidents, risks])
   const filtered = useMemo(() => sortIncidents(filterIncidents(incidents, filters), risks), [incidents, filters, risks])
+  const overdueByIncident = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const incident of incidents) {
+      const count = deriveChecklist(incident, actionEvents, now).overdueCount
+      if (count > 0) map.set(incident.id, count)
+    }
+    return map
+  }, [incidents, actionEvents, now])
   const selected = filtered.find((incident) => incident.id === selectedId) ?? filtered[0]
   const unresolved = incidents.filter((incident) => incident.status !== 'RESOLVED')
   const activeCount = unresolved.length
@@ -103,6 +129,7 @@ function App() {
 
   const reloadIncidents = useCallback(async () => {
     setIncidents(await getIncidents())
+    setActionEvents(await readAllActionEvents(await getDb()))
     setNow(Date.now())
   }, [])
 
@@ -139,6 +166,23 @@ function App() {
       setSaveError('The report was not saved locally. Please try again.')
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function toggleAction(incident: Incident, actionId: string, completed: boolean) {
+    const key = `${incident.id}:${actionId}`
+    if (pendingActions.has(key)) return // ignore repeated clicks while a save is in flight
+    setPendingActions((current) => new Set(current).add(key))
+    setChecklistError('')
+    try {
+      const result = await recordActionEvent(await getDb(), { incidentId: incident.id, actionId, type: completed ? 'COMPLETED' : 'UNDONE', at: new Date().toISOString(), actor: DEMO_ACTOR })
+      // Re-read from IndexedDB so the screen always reflects what was actually saved (also covers no-op duplicates).
+      setActionEvents(await readAllActionEvents(await getDb()))
+      if (!result.applied && result.reason !== 'ALREADY_COMPLETED' && result.reason !== 'NOT_COMPLETED') setChecklistError('That action could not be recorded for this report.')
+    } catch {
+      setChecklistError('The checklist change was not saved. Please try again.')
+    } finally {
+      setPendingActions((current) => { const next = new Set(current); next.delete(key); return next })
     }
   }
 
@@ -185,7 +229,7 @@ function App() {
                 <span className="hidden text-xs text-muted sm:block">Active first · risk score · severity · oldest</span>
               </div>
               {queueFilters}
-              {loading ? loadingBlock : <IncidentList risks={risks} incidents={filtered.slice(0, QUEUE_PREVIEW)} selectedId={undefined} onSelect={openIncident} onAdvance={(i) => void advanceStatus(i)} {...emptyProps} />}
+              {loading ? loadingBlock : <IncidentList risks={risks} overdue={overdueByIncident} incidents={filtered.slice(0, QUEUE_PREVIEW)} selectedId={undefined} onSelect={openIncident} onAdvance={(i) => void advanceStatus(i)} {...emptyProps} />}
               {!loading && filtered.length > QUEUE_PREVIEW && (
                 <button type="button" onClick={() => navigate('reports')} className="flex w-full items-center justify-center gap-1.5 border-t border-line px-4 py-3 text-sm font-semibold text-brand-700 transition hover:bg-tint">View all {filtered.length} reports<ArrowRight size={15} /></button>
               )}
@@ -213,9 +257,10 @@ function App() {
                 <span className="hidden text-xs text-muted sm:block">Active first · risk score · severity · oldest</span>
               </div>
               {queueFilters}
-              {loading ? loadingBlock : <IncidentList risks={risks} incidents={filtered} selectedId={selected?.id} onSelect={setSelectedId} onAdvance={(i) => void advanceStatus(i)} {...emptyProps} />}
+              {loading ? loadingBlock : <IncidentList risks={risks} overdue={overdueByIncident} incidents={filtered} selectedId={selected?.id} onSelect={setSelectedId} onAdvance={(i) => void advanceStatus(i)} {...emptyProps} />}
             </section>
-            {selected && <IncidentDetails incident={selected} risk={risks.get(selected.id)} onAdvance={() => void advanceStatus(selected)} />}
+            {selected && <IncidentDetails incident={selected} risk={risks.get(selected.id)} onAdvance={() => void advanceStatus(selected)}
+              checklist={<ResponseChecklist incident={selected} checklist={deriveChecklist(selected, actionEvents, now)} now={now} loading={eventsLoading} loadError={eventsError} actionError={checklistError} pending={new Set([...pendingActions].filter((k) => k.startsWith(`${selected.id}:`)).map((k) => k.slice(selected.id.length + 1)))} onToggle={(actionId, completed) => void toggleAction(selected, actionId, completed)} />} />}
           </div>
           <aside className="card h-fit p-5 sm:p-6 xl:order-2 xl:sticky xl:top-24">
             <div className="mb-5"><h2 className="font-semibold text-ink">New crowd report</h2><p className="mt-0.5 text-xs text-muted">Saved on this device, even when offline.</p></div>

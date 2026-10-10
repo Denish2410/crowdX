@@ -11,15 +11,26 @@ npm run dev
 
 Open the local address Vite prints (normally `http://localhost:5173`).
 
-To create the production bundle:
+Other commands:
 
 ```bash
-npm run build
+npm test          # Vitest suite
+npm run build     # type-check + production bundle + service worker
+npm run preview   # serve the production build at http://localhost:4173 (the service worker and PWA install only work here, not under `npm run dev`)
 ```
+
+Requires Node.js 20+ (developed on Node 22). `scripts/generate-icons.py` (needs Pillow) regenerates the placeholder PWA icons in `public/`; it is not needed to run the app.
+
+## Features
+
+- Crowd reports with station/zone/severity/notes, a priority queue, corridor and station filters, and OPEN → ACKNOWLEDGED → RESOLVED status history.
+- 23 Ahmedabad Metro Phase II stations on two corridors, with GNLU as the shared interchange. **This is demonstration data compiled from a route map; verify names and the station count against official GMRC sources before operational use.**
+- Explainable crowd-risk scoring, incident response checklists with derived response-target indicators, and JSON backup / CSV export / additive restore. Each is described below.
+- Installable, offline-first PWA.
 
 ## Deliberate MVP scope
 
-- React, Vite, TypeScript, Tailwind CSS, Lucide React, and `idb` only.
+- React, Vite, TypeScript, Tailwind CSS, Lucide React, `idb` and `vite-plugin-pwa` (Vitest and `fake-indexeddb` for tests only).
 - No server, MongoDB, authentication, cloud sync, or network data calls.
 - Reports persist in the browser's IndexedDB and survive reloads on the same device/browser.
 - The app is a PWA: a Workbox service worker (vite-plugin-pwa) precaches the app shell so it reloads offline. Updates are applied only when staff choose "Reload to update".
@@ -75,7 +86,7 @@ This exact case is covered by a unit test.
 
 ### Offline behaviour
 
-Scoring is a pure function over the reports already loaded from IndexedDB (`src/services/riskScoring.ts`). It uses no network, DOM or storage. Scores are **never stored**; they are recomputed from the reports and a reference time on load, when a report is added or changed, and about once a minute while the page is visible, so they cannot go stale or disagree with the data. The IndexedDB schema is unchanged.
+Scoring is a pure function over the reports already loaded from IndexedDB (`src/services/riskScoring.ts`). It uses no network, DOM or storage. Scores are **never stored**; they are recomputed from the reports and a reference time on load, when a report is added or changed, and about once a minute while the page is visible, so they cannot go stale or disagree with the data. Scoring itself adds nothing to IndexedDB.
 
 ### Running tests and the build
 
@@ -109,7 +120,7 @@ Open **Data Management** in the sidebar. Everything runs in the browser against 
 - **Export CSV** downloads `crowdx-reports-YYYY-MM-DD.csv`, one row per report, for analysis in a spreadsheet. A CSV is **not** a backup and cannot be restored.
 - After each export the page shows how many reports were written and the time of the last export in this session (the last-export time is kept in memory only).
 
-### JSON backup format (schema version 1)
+### JSON backup format (schema version 2)
 
 ```json
 {
@@ -121,11 +132,16 @@ Open **Data Management** in the sidebar. Everything runs in the browser against 
     { "id": "…", "station": "GNLU", "stationId": "ST_GNLU", "zone": "Interchange", "severity": "HIGH",
       "notes": "…", "status": "OPEN", "createdAt": "…", "updatedAt": "…",
       "history": [{ "status": "OPEN", "at": "…" }] }
+  ],
+  "actionEvents": [
+    { "id": "…", "incidentId": "…", "actionId": "PB_HIGH_REVIEW", "type": "COMPLETED",
+      "at": "…", "actor": "Demo staff", "seq": 1 }
   ]
 }
 ```
 
-- `incidents` are the app's own report objects, unchanged. The `incidents` store is the only persisted application data, so nothing else is exported.
+- `incidents` are the app's own report objects, unchanged. `actionEvents` (schema version 2) is the response-checklist log described below. These two stores are the only persisted application data.
+- **Compatibility:** version 1 backups (no `actionEvents`) are still accepted and restore normally with no checklist events. Version 2 requires the `actionEvents` array. Anything newer than version 2 is rejected.
 - `stationDataset` is informational metadata. Stations are not restored from a backup; the app's built-in 23-station dataset is always used.
 - **Calculated risk scores are not stored** in the backup. They are derived values and are recomputed from the restored reports.
 - Files with a `schemaVersion` newer than the app supports are rejected with a message rather than guessed at.
@@ -167,4 +183,29 @@ npm run preview   # serve the build; the service worker only runs here, not unde
 - **Privacy:** backups and CSV files contain incident data (stations, notes, timestamps). Store them securely and share them only with authorised staff. Files are not encrypted.
 - **Data loss:** reports live only in this browser. Clearing site data, using a private window, uninstalling the app or losing the device erases them. Export a backup regularly and keep it somewhere safe.
 - Restore is additive only (no replace or merge), is limited to 25 MB per file, and the "last exported" time resets when the page is reloaded.
-- Backups restore into the current database schema (version 1); there is no migration of older or newer database versions.
+- Backups restore into the current database schema (version 2). Checklist events are restored only together with a report that is itself being newly restored; they are never attached to, or merged into, a report already on the device.
+
+## Incident response playbooks (illustrative)
+
+> **All example procedures are illustrative prototype content.** They are not official GMRC procedures and do not replace approved emergency protocols. Operations owners must define, review and approve real procedures before any operational use.
+
+Each report's detail view has a **Response checklist** chosen from the report's staff-reported severity (LOW 2 actions, MEDIUM 3, HIGH 3, CRITICAL 3). Definitions live in `src/services/playbooks.ts` as plain data (stable action ID, title, description, severity, optional response target), separate from the UI.
+
+- **Completing and undoing:** tick an action to record a `COMPLETED` event; untick to record an `UNDONE` event. Events are append-only, so undoing keeps the audit trail. Each event has an ID, incident ID, action ID, type, timestamp, actor label and a per-action sequence number. The current state is derived from the latest event.
+- **Duplicates:** completion is checked and written inside one IndexedDB transaction, so double clicks and retries produce a single event (a repeated completion, or an undo of an incomplete action, is a no-op).
+- **Actor:** events use the label "Demo staff". CrowdX has no authentication, so this is **not a verified identity**.
+- **No automatic resolution:** finishing every action never resolves the incident or changes its severity or status; resolving remains a separate staff action.
+- **Escalation indicators:** each action can have a response target in minutes measured from when the report was created (defaults: CRITICAL 5/5/15, HIGH 15/15/30, MEDIUM 30/30/60, LOW 60 and none). An unresolved incident shows its elapsed time, and unfinished actions past their target show **"Response target exceeded"** in the queue and the checklist. This is derived from timestamps each time the screen refreshes (about once a minute while the page is open, and on reload); no "overdue" flag is stored. Completed actions are never overdue (late ones are labelled "after target"), and resolved incidents show no overdue actions.
+- **Changing targets:** edit `responseTargetMinutes` in `defaultPlaybookConfig`, or pass your own `PlaybookConfig` to `getPlaybook` / `deriveChecklist`. Keep existing action IDs stable because they are stored in events and backups.
+
+### Storage, upgrade and backups
+
+- Events live in a new `actionEvents` object store with a `by-incident` index. The database version went from 1 to 2. The upgrade only adds the new store; it never touches, clears or recreates `incidents`, so existing reports and histories load unchanged (covered by a migration test and checked against a real version 1 database in Chrome).
+- JSON backups (schema version 2) include `actionEvents`. On import each event is validated: known action for the incident's severity, ISO 8601 timestamp, valid type, non-empty actor, `seq` 1..n without gaps, strictly alternating `COMPLETED`/`UNDONE` starting with `COMPLETED`, timestamps not going backwards, a known incident, and an unused event ID. Invalid, duplicate, orphaned or not-restored events are listed in the preview and skipped. Restore is still one all-or-nothing transaction covering reports and events.
+
+### Limitations
+
+- Indicators update only while CrowdX is open; there are no push notifications, background alerts or services, and nothing runs while the app is closed.
+- Targets are demo values and are not calibrated or approved. Checklists are per device and do not sync.
+- If an older CrowdX tab is still open when the new version first loads, the database upgrade waits until that tab is closed or reloaded.
+- Playbook definitions are not stored in backups (only the events and their action IDs), so a restore into a build with different definitions will skip events whose actions no longer apply.

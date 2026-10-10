@@ -1,25 +1,29 @@
 /**
- * CrowdX JSON backup format (schemaVersion 1)
+ * CrowdX JSON backup format (schemaVersion 2)
  *
  * {
  *   "app": "CrowdX",
  *   "schemaVersion": 1,
  *   "exportedAt": "<ISO 8601>",
  *   "stationDataset": { "stationCount": 23, "stationIds": ["ST_..."] },   // informational metadata only
- *   "incidents": [ Incident, ... ]                                       // every record in the `incidents` store
+ *   "incidents": [ Incident, ... ],                                      // every record in the `incidents` store
+ *   "actionEvents": [ ActionEvent, ... ]                                 // schemaVersion 2+: response-checklist log
  * }
  *
  * `incidents` holds the app's own Incident objects unchanged (id, station, stationId?, zone, severity, notes, status,
  * createdAt, updatedAt, history[]). The `incidents` store is the only persisted application data, so nothing else is
  * exported. Calculated risk scores are deliberately NOT stored: they are derived values and are recomputed from the
  * restored reports. Newer schema versions are rejected rather than guessed at.
+ *
+ * Version history: 1 = incidents only. 2 = adds `actionEvents` (the append-only response-checklist log, with
+ * the actor label, timestamps and event types). Version 1 files remain valid and restore with no checklist events.
  */
 import { metroStations, resolveStation } from '../data/stations'
 import { severities, statuses } from '../types'
-import type { Incident, StatusEvent } from '../types'
+import type { ActionEvent, Incident, StatusEvent } from '../types'
 
 export const BACKUP_APP_ID = 'CrowdX'
-export const BACKUP_SCHEMA_VERSION = 1
+export const BACKUP_SCHEMA_VERSION = 2
 export const MAX_BACKUP_BYTES = 25 * 1024 * 1024
 
 export interface CrowdXBackup {
@@ -28,10 +32,11 @@ export interface CrowdXBackup {
   exportedAt: string
   stationDataset: { stationCount: number; stationIds: string[] }
   incidents: Incident[]
+  actionEvents: ActionEvent[]
 }
 
 /** Serialises incidents into the backup format. Sorted by creation time then ID so output is deterministic. */
-export function createBackup(incidents: readonly Incident[], exportedAt: Date): CrowdXBackup {
+export function createBackup(incidents: readonly Incident[], exportedAt: Date, actionEvents: readonly ActionEvent[] = []): CrowdXBackup {
   const sorted = [...incidents].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
   return {
     app: BACKUP_APP_ID,
@@ -39,6 +44,7 @@ export function createBackup(incidents: readonly Incident[], exportedAt: Date): 
     exportedAt: exportedAt.toISOString(),
     stationDataset: { stationCount: metroStations.length, stationIds: metroStations.map((station) => station.id) },
     incidents: sorted,
+    actionEvents: [...actionEvents].sort((a, b) => a.incidentId.localeCompare(b.incidentId) || a.actionId.localeCompare(b.actionId) || a.seq - b.seq),
   }
 }
 
@@ -149,7 +155,7 @@ export function validateIncident(raw: unknown): RecordValidation {
 
 export type ParsedBackup =
   | { ok: false; error: string }
-  | { ok: true; exportedAt: string; schemaVersion: number; records: unknown[] }
+  | { ok: true; exportedAt: string; schemaVersion: number; records: unknown[]; events: unknown[] }
 
 /** Parses and checks the envelope only; individual records are validated by validateIncident. */
 export function parseBackup(text: string): ParsedBackup {
@@ -169,5 +175,11 @@ export function parseBackup(text: string): ParsedBackup {
   }
   if (!isIsoTimestamp(data.exportedAt)) return { ok: false, error: 'The backup has no valid "exportedAt" timestamp.' }
   if (!Array.isArray(data.incidents)) return { ok: false, error: 'The backup has no "incidents" array.' }
-  return { ok: true, exportedAt: data.exportedAt, schemaVersion: version, records: data.incidents }
+  // Version 1 predates checklist events; any `actionEvents` key in such a file is ignored.
+  let events: unknown[] = []
+  if (version >= 2) {
+    if (!Array.isArray(data.actionEvents)) return { ok: false, error: 'The backup has no "actionEvents" array (required from schema version 2).' }
+    events = data.actionEvents
+  }
+  return { ok: true, exportedAt: data.exportedAt, schemaVersion: version, records: data.incidents, events }
 }

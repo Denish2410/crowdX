@@ -216,7 +216,7 @@ describe('transactional restore (fake IndexedDB)', () => {
 
   it('restoring nothing is a no-op', async () => {
     const db = await freshDb()
-    expect(await restoreIncidents(db, [])).toEqual({ added: 0 })
+    expect(await restoreIncidents(db, [])).toEqual({ added: 0, eventsAdded: 0 })
     db.close()
   })
 

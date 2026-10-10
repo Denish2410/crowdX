@@ -1,12 +1,13 @@
 /** CSV export of incident reports. Pure; the caller supplies the reference time used for calculated risk. */
 import { corridorById, resolveStation } from '../data/stations'
+import { deriveChecklist } from './escalation'
 import { scoreIncidents } from './riskScoring'
-import type { Incident } from '../types'
+import type { ActionEvent, Incident } from '../types'
 
 export const CSV_COLUMNS = [
   'report_id', 'station_name', 'station_id', 'corridor', 'zone', 'reported_severity', 'status',
   'calculated_risk_score', 'calculated_risk_band', 'risk_counts_as_active', 'risk_reference_time',
-  'notes', 'created_at', 'updated_at', 'resolved_at', 'status_history',
+  'notes', 'created_at', 'updated_at', 'resolved_at', 'status_history', 'response_actions_completed',
 ] as const
 
 /**
@@ -28,8 +29,8 @@ function resolvedAt(incident: Incident) {
   return [...incident.history].reverse().find((event) => event.status === 'RESOLVED')?.at
 }
 
-/** Rows are ordered by creation time then ID. Output starts with a UTF-8 BOM so spreadsheet apps detect UTF-8. */
-export function incidentsToCsv(incidents: readonly Incident[], referenceTime: Date): string {
+/** `response_actions_completed` is a compact done/total count; the full action log lives in the JSON backup. Rows are ordered by creation time then ID. Output starts with a UTF-8 BOM so spreadsheet apps detect UTF-8. */
+export function incidentsToCsv(incidents: readonly Incident[], referenceTime: Date, actionEvents: readonly ActionEvent[] = []): string {
   const risks = scoreIncidents(incidents, referenceTime)
   const reference = referenceTime.toISOString()
   const sorted = [...incidents].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
@@ -54,6 +55,7 @@ export function incidentsToCsv(incidents: readonly Incident[], referenceTime: Da
       incident.updatedAt,
       resolvedAt(incident),
       historySummary(incident),
+      (() => { const list = deriveChecklist(incident, actionEvents, referenceTime); return `${list.completedCount}/${list.totalCount}` })(),
     ].map(csvCell).join(','))
   }
   return `﻿${lines.join('\r\n')}\r\n`

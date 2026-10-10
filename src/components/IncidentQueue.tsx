@@ -1,4 +1,5 @@
-import { ArrowRight, CheckCircle2, ChevronRight, Clock3, Inbox, MapPin } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { AlertTriangle, ArrowRight, CheckCircle2, ChevronRight, Clock3, Inbox, MapPin } from 'lucide-react'
 import { resolveStation } from '../data/stations'
 import { actionLabel, formatTimestamp, nextStatus, relativeTime, severityTone } from '../lib/incidents'
 import type { RiskResult } from '../services/riskScoring'
@@ -6,9 +7,11 @@ import { riskBandLabel } from '../services/riskScoring'
 import type { Incident } from '../types'
 import { CorridorBadges, EmptyState, RiskBadge, RiskBadgeFor, riskTone, SeverityBadge, StatusBadge } from './ui'
 
-export function IncidentList({ incidents, risks, selectedId, onSelect, onAdvance, emptyTitle, emptyHint }: {
+export function IncidentList({ incidents, risks, overdue, selectedId, onSelect, onAdvance, emptyTitle, emptyHint }: {
   incidents: Incident[]
   risks: ReadonlyMap<string, RiskResult>
+  /** Count of response actions past their target, by incident ID. */
+  overdue: ReadonlyMap<string, number>
   selectedId?: string
   onSelect: (id: string) => void
   onAdvance: (incident: Incident) => void
@@ -19,13 +22,13 @@ export function IncidentList({ incidents, risks, selectedId, onSelect, onAdvance
   return (
     <ul className="divide-y divide-line">
       {incidents.map((incident) => (
-        <IncidentRow key={incident.id} incident={incident} risk={risks.get(incident.id)} selected={incident.id === selectedId} onSelect={() => onSelect(incident.id)} onAdvance={() => onAdvance(incident)} />
+        <IncidentRow key={incident.id} incident={incident} risk={risks.get(incident.id)} overdue={overdue.get(incident.id) ?? 0} selected={incident.id === selectedId} onSelect={() => onSelect(incident.id)} onAdvance={() => onAdvance(incident)} />
       ))}
     </ul>
   )
 }
 
-function IncidentRow({ incident, risk, selected, onSelect, onAdvance }: { incident: Incident; risk?: RiskResult; selected: boolean; onSelect: () => void; onAdvance: () => void }) {
+function IncidentRow({ incident, risk, overdue, selected, onSelect, onAdvance }: { incident: Incident; risk?: RiskResult; overdue: number; selected: boolean; onSelect: () => void; onAdvance: () => void }) {
   const station = resolveStation(incident)
   const action = actionLabel[incident.status]
   const resolved = incident.status === 'RESOLVED'
@@ -43,6 +46,7 @@ function IncidentRow({ incident, risk, selected, onSelect, onAdvance }: { incide
             <RiskBadgeFor risk={risk} />
             <SeverityBadge severity={incident.severity} />
             <StatusBadge status={incident.status} />
+            {overdue > 0 && <span className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-800"><AlertTriangle size={12} aria-hidden />Response target exceeded</span>}
             <span className="inline-flex items-center gap-1 text-xs text-muted"><Clock3 size={12} />{relativeTime(incident.createdAt)}</span>
           </div>
         </div>
@@ -57,7 +61,7 @@ function IncidentRow({ incident, risk, selected, onSelect, onAdvance }: { incide
   )
 }
 
-export function IncidentDetails({ incident, risk, onAdvance }: { incident: Incident; risk?: RiskResult; onAdvance: () => void }) {
+export function IncidentDetails({ incident, risk, checklist, onAdvance }: { incident: Incident; risk?: RiskResult; checklist?: ReactNode; onAdvance: () => void }) {
   const station = resolveStation(incident)
   const action = actionLabel[incident.status]
   return (
@@ -75,6 +79,7 @@ export function IncidentDetails({ incident, risk, onAdvance }: { incident: Incid
       </div>
 
       {risk && <RiskPanel risk={risk} />}
+      {checklist}
 
       <div className="mt-5 grid gap-6 md:grid-cols-[minmax(0,1fr)_13rem]">
         <div>

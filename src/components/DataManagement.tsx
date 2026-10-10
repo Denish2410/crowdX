@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, Download, FileJson, FileSpreadsheet, Loade
 import { downloadTextFile } from '../lib/download'
 import { getDb } from '../lib/db'
 import { backupFilename, createBackup, MAX_BACKUP_BYTES, parseBackup } from '../services/backupFormat'
+import { readAllActionEvents } from '../services/actionTracking'
 import { readAllIncidents, restoreIncidents } from '../services/backupRestore'
 import { incidentsToCsv } from '../services/csvExport'
 import { kindLabel, planImport } from '../services/importPlan'
@@ -54,10 +55,12 @@ export function DataManagement({ onRestored }: { onRestored: () => Promise<void>
     setExporting(kind)
     setExportNotice(null)
     try {
-      const incidents = await readAllIncidents(await getDb())
+      const db = await getDb()
+      const incidents = await readAllIncidents(db)
+      const actionEvents = await readAllActionEvents(db)
       const when = new Date()
-      if (kind === 'json') downloadTextFile(backupFilename(when, 'json'), JSON.stringify(createBackup(incidents, when), null, 2), 'application/json')
-      else downloadTextFile(backupFilename(when, 'csv', 'crowdx-reports'), incidentsToCsv(incidents, when), 'text/csv;charset=utf-8')
+      if (kind === 'json') downloadTextFile(backupFilename(when, 'json'), JSON.stringify(createBackup(incidents, when, actionEvents), null, 2), 'application/json')
+      else downloadTextFile(backupFilename(when, 'csv', 'crowdx-reports'), incidentsToCsv(incidents, when, actionEvents), 'text/csv;charset=utf-8')
       setLastExport((current) => ({ ...current, [kind]: when }))
       const count = `${incidents.length} ${incidents.length === 1 ? 'report' : 'reports'}`
       setExportNotice({ tone: 'success', text: `${kind === 'json' ? 'JSON backup' : 'CSV'} created with ${count}${incidents.length === 0 ? ' (there are no reports yet)' : ''}. Your browser saves the file; nothing was uploaded.` })
@@ -89,8 +92,10 @@ export function DataManagement({ onRestored }: { onRestored: () => Promise<void>
         setImportNotice({ tone: 'error', text: parsed.error })
         return
       }
-      const existing = await readAllIncidents(await getDb())
-      const plan = planImport(parsed.records, existing)
+      const db = await getDb()
+      const existing = await readAllIncidents(db)
+      const existingEventIds = new Set((await readAllActionEvents(db)).map((event) => event.id))
+      const plan = planImport(parsed.records, existing, parsed.events, existingEventIds)
       setPreview({ fileName: file.name, exportedAt: parsed.exportedAt, plan })
       setSelected(new Set(plan.items.filter((item) => item.kind === 'ADD').map((item) => item.index)))
     } catch {
@@ -102,15 +107,18 @@ export function DataManagement({ onRestored }: { onRestored: () => Promise<void>
 
   async function restore() {
     if (!preview) return
-    const records = preview.plan.items.filter((item) => item.kind === 'ADD' && selected.has(item.index)).map((item) => item.incident!)
+    const chosen = preview.plan.items.filter((item) => item.kind === 'ADD' && selected.has(item.index))
+    const records = chosen.map((item) => item.incident!)
+    const chosenIds = new Set(records.map((incident) => incident.id))
+    const events = preview.plan.events.filter((item) => item.kind === 'ATTACH' && chosenIds.has(item.event!.incidentId)).map((item) => item.event!)
     if (records.length === 0) return
     setRestoring(true)
     setImportNotice(null)
     try {
-      const { added } = await restoreIncidents(await getDb(), records)
+      const { added, eventsAdded } = await restoreIncidents(await getDb(), records, events)
       await onRestored()
       resetImport()
-      setImportNotice({ tone: 'success', text: `Restored ${added} ${added === 1 ? 'report' : 'reports'}. Existing reports were not changed.` })
+      setImportNotice({ tone: 'success', text: `Restored ${added} ${added === 1 ? 'report' : 'reports'}${eventsAdded ? ` and ${eventsAdded} checklist ${eventsAdded === 1 ? 'event' : 'events'}` : ''}. Existing reports were not changed.` })
     } catch (error) {
       setImportNotice({ tone: 'error', text: error instanceof Error ? error.message : 'The restore failed and no records were added.' })
     } finally {
@@ -176,6 +184,17 @@ export function DataManagement({ onRestored }: { onRestored: () => Promise<void>
               <div key={label} className="px-4 py-3"><dt className="text-xs text-muted">{label}</dt><dd className={`text-2xl font-bold tabular-nums ${tone}`}>{value}</dd></div>
             ))}
           </dl>
+
+          {preview.plan.events.length > 0 && (() => {
+            const ev = preview.plan.events
+            const n = (kind: string) => ev.filter((e) => e.kind === kind).length
+            return (
+              <p className="border-b border-line px-5 py-3 text-xs text-slate-600 sm:px-6">
+                Response checklist events: <strong>{n('ATTACH')}</strong> will be restored with their new reports; {n('NOT_RESTORED') + n('DUPLICATE') + n('UNKNOWN_INCIDENT')} skipped; {n('INVALID')} invalid.
+                {ev.filter((e) => e.kind !== 'ATTACH' && e.reason).slice(0, 3).map((e) => <span key={e.index} className="mt-1 block text-slate-500">Event {e.index + 1}: {e.reason}</span>)}
+              </p>
+            )
+          })()}
 
           {counts.total === 0 ? (
             <p className="px-6 py-8 text-center text-sm text-muted">This backup contains no reports.</p>

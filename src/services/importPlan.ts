@@ -1,5 +1,7 @@
 /** Classifies parsed backup records against what is already stored. Pure: never touches IndexedDB. */
 import { validateIncident } from './backupFormat'
+import { planEvents } from './eventValidation'
+import type { EventPlanItem } from './eventValidation'
 import type { Incident } from '../types'
 
 export type PlanKind = 'ADD' | 'IDENTICAL' | 'CONFLICT' | 'FILE_DUPLICATE' | 'FILE_CONFLICT' | 'INVALID'
@@ -18,6 +20,8 @@ export interface PlanItem {
 
 export interface ImportPlan {
   items: PlanItem[]
+  /** Response-checklist events from the backup (schema version 2+), classified separately. */
+  events: EventPlanItem[]
   counts: Record<PlanKind, number> & { total: number }
 }
 
@@ -36,7 +40,7 @@ export function differingFields(a: Incident, b: Incident): string[] {
   return FIELDS.filter((field) => JSON.stringify(a[field] ?? null) !== JSON.stringify(b[field] ?? null))
 }
 
-export function planImport(records: readonly unknown[], existing: readonly Incident[]): ImportPlan {
+export function planImport(records: readonly unknown[], existing: readonly Incident[], rawEvents: readonly unknown[] = [], existingEventIds: ReadonlySet<string> = new Set()): ImportPlan {
   const stored = new Map(existing.map((incident) => [incident.id, incident]))
   const items: PlanItem[] = records.map((raw, index) => {
     const result = validateIncident(raw)
@@ -81,5 +85,8 @@ export function planImport(records: readonly unknown[], existing: readonly Incid
 
   const counts = { ADD: 0, IDENTICAL: 0, CONFLICT: 0, FILE_DUPLICATE: 0, FILE_CONFLICT: 0, INVALID: 0, total: items.length }
   for (const item of items) counts[item.kind] += 1
-  return { items, counts }
+  const fileIncidents = new Map(items.filter((item) => item.incident && item.kind !== 'INVALID' && item.kind !== 'FILE_CONFLICT').map((item) => [item.id!, item.incident!]))
+  const restorable = new Set(items.filter((item) => item.kind === 'ADD').map((item) => item.id!))
+  const events = planEvents(rawEvents, fileIncidents, new Set(stored.keys()), restorable, existingEventIds)
+  return { items, events, counts }
 }

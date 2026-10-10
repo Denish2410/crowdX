@@ -25,3 +25,23 @@ export interface Incident {
 }
 
 export type NewIncident = Pick<Incident, 'station' | 'stationId' | 'zone' | 'severity' | 'notes'>
+
+export const actionEventTypes = ['COMPLETED', 'UNDONE'] as const
+export type ActionEventType = (typeof actionEventTypes)[number]
+
+/**
+ * One entry in the append-only response-checklist log for an incident. The current state of an action is
+ * derived from its latest event; events are never edited or deleted.
+ */
+export interface ActionEvent {
+  id: string
+  incidentId: string
+  actionId: string
+  type: ActionEventType
+  /** ISO 8601 time the event was recorded. */
+  at: string
+  /** Demo staff label. Not a verified identity. */
+  actor: string
+  /** 1-based position among this incident+action's events; gives a stable order even when timestamps tie. */
+  seq: number
+}
