@@ -22,4 +22,4 @@ npm run build
 - React, Vite, TypeScript, Tailwind CSS, Lucide React, and `idb` only.
 - No server, MongoDB, authentication, cloud sync, or network data calls.
 - Reports persist in the browser's IndexedDB and survive reloads on the same device/browser.
-- Service-worker caching has not been added or tested yet, so the app does not claim offline asset availability.
+- The app is a PWA: a Workbox service worker (vite-plugin-pwa) precaches the app shell so it reloads offline. Updates are applied only when staff choose "Reload to update".
